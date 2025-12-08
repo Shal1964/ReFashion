@@ -8,31 +8,29 @@ st.set_page_config(page_title="ReFashion Eco Chat", layout="wide")
 API_URL = "https://api.deepinfra.com/v1/openai/chat/completions"
 MODEL_NAME = "openai/gpt-oss-120b"
 SYSTEM_PROMPT = """
-You are ReFashion, a friendly and knowledgeable assistant specializing in sustainable fashion. You can:
-1. Have natural conversations about fashion, sustainability, clothing care, trends, shopping tips, and eco-conscious lifestyle
-2. Evaluate how eco-friendly specific garments are
-3. Recommend sustainable fabrics based on user preferences
+You are ReFashion, a friendly and knowledgeable assistant specializing in sustainable fashion. You help users by:
+1. Having natural conversations about fashion, sustainability, clothing care, trends, and eco-conscious lifestyle
+2. Evaluating how eco-friendly specific garments are with detailed scoring
+3. Recommending sustainable fabrics based on user preferences
 
-Response Format:
-- For GENERAL QUESTIONS, CONVERSATIONS, or ADVICE: Respond naturally in plain text without JSON. Be conversational, helpful, and informative.
-- For ECO SCORING REQUESTS (when user asks to rate/score a specific garment or asks "how eco-friendly is X"): Respond with JSON:
-{
-  "eco_score": integer 0-100 where higher is better and 50 is average,
-  "verdict": short headline verdict,
-  "fabrics": list of {"name": str, "impact": one of ["excellent","good","fair","poor"], "notes": str},
-  "summary": one-sentence summary,
-  "tips": array of up to 3 concise improvement tips for consumers
-}
-- For FABRIC RECOMMENDATION REQUESTS: Respond with JSON including optional "recommendations" field:
-{
-  "recommendations": array of {"fabric": str, "reason": str, "best_for": str},
-  "summary": overview of recommendations,
-  "tips": array of practical advice
-}
+Always respond in natural, conversational language. Never use JSON format - write in a friendly, readable way.
+
+When evaluating garments for eco-friendliness:
+- Provide a clear score out of 100 (higher is better, 50 is average)
+- Give a verdict headline (e.g., "Moderately Sustainable Choice" or "Highly Eco-Friendly")
+- Analyze each fabric mentioned, rating impact as excellent/good/fair/poor with explanation
+- Summarize the overall sustainability
+- Offer 2-3 practical tips for the consumer
+
+When recommending fabrics:
+- Suggest 2-4 eco-friendly fabrics matching their needs
+- Explain why each fabric suits their requirements
+- Mention what each fabric is best for
+- Include care tips where relevant
 
 Scoring guidance: favor recycled fibers, organic cotton, hemp, linen, certified lyocell, Tencel, and durability; penalize virgin polyester, acrylic, conventional cotton without certifications, heavy dyeing, and blends that hinder recycling.
 
-Be warm, engaging, and educational. Help users make better fashion choices while building a sustainable wardrobe.
+Be warm, engaging, educational, and use emojis occasionally to make responses friendly. Structure your responses with clear headings and bullet points for readability.
 """
 
 
@@ -121,70 +119,7 @@ def parse_assistant_content(content):
 
 
 def render_assistant_message(message):
-    parsed = parse_assistant_content(message)
-
-    if not parsed:
-        st.markdown(message)
-        return
-
-    has_score = "eco_score" in parsed
-    has_recommendations = "recommendations" in parsed
-
-    score = parsed.get("eco_score")
-    verdict = parsed.get("verdict", "")
-    summary = parsed.get("summary", "")
-    tips = parsed.get("tips", [])
-    fabrics = parsed.get("fabrics", [])
-    recommendations = parsed.get("recommendations", [])
-
-    if has_score or has_recommendations or fabrics:
-        if verdict:
-            st.markdown(f"### {verdict}")
-
-        if isinstance(score, (int, float)):
-            score_color = "#88c988" if score >= 70 else "#e3c85a" if score >= 40 else "#c45252"
-            st.markdown(
-                f'<div style="background: #f0f0f0; border-radius: 20px; height: 12px; overflow: hidden; margin: 1rem 0;">'
-                f'<div style="background: {score_color}; width: {min(max(score, 0), 100)}%; height: 100%;"></div></div>'
-                f'<p style="text-align: center; font-weight: 600; color: {score_color}; font-size: 1.1rem;">Eco Score: {score}/100</p>',
-                unsafe_allow_html=True
-            )
-
-        if summary:
-            st.info(summary)
-
-        if fabrics:
-            st.markdown("#### 📋 Fabric Analysis")
-            for fabric in fabrics:
-                name = fabric.get("name", "Fabric")
-                impact = fabric.get("impact", "")
-                notes = fabric.get("notes", "")
-                impact_emoji = {"excellent": "🌟", "good": "✅", "fair": "⚠️", "poor": "❌"}.get(impact.lower(), "")
-                st.markdown(f"**{impact_emoji} {name}** — _{impact}_")
-                st.markdown(f"> {notes}")
-
-        if recommendations:
-            st.markdown("#### 🌿 Recommended Fabrics")
-            for rec in recommendations:
-                fabric_name = rec.get("fabric", "")
-                reason = rec.get("reason", "")
-                best_for = rec.get("best_for", "")
-                st.markdown(f"**{fabric_name}**")
-                if reason:
-                    st.markdown(f"_{reason}_")
-                if best_for:
-                    st.markdown(f"Best for: {best_for}")
-                st.markdown("---")
-
-        if tips:
-            st.markdown("#### 💡 Tips for You")
-            for tip in tips:
-                st.markdown(f"- {tip}")
-    else:
-        if summary:
-            st.markdown(summary)
-        else:
-            st.markdown(message)
+    st.markdown(message)
 themed_container()
 
 col1, col2, col3 = st.columns([1, 2, 1])
