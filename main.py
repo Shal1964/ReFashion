@@ -237,24 +237,42 @@ def fetch_completion(user_message, chat_history):
         "model": MODEL_NAME,
         "messages": messages,
         "temperature": 0.35,
-        "max_tokens": 512,
+        "stream": True,
     }
     try:
         response = requests.post(
             API_URL,
             headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
             json=payload,
-            timeout=30,
+            timeout=60,
+            stream=True,
         )
         if response.status_code != 200:
             st.error(f"DeepInfra error {response.status_code}: {response.text[:200]}")
             return None
-        data = response.json()
-        content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
-        return content
+        return response
     except requests.RequestException as exc:
         st.error(f"Request failed: {exc}")
         return None
+
+
+def stream_response(response):
+    """Generator that yields text chunks from streaming response."""
+    for line in response.iter_lines():
+        if line:
+            line = line.decode("utf-8")
+            if line.startswith("data: "):
+                data = line[6:]
+                if data == "[DONE]":
+                    break
+                try:
+                    chunk = json.loads(data)
+                    delta = chunk.get("choices", [{}])[0].get("delta", {})
+                    content = delta.get("content", "")
+                    if content:
+                        yield content
+                except json.JSONDecodeError:
+                    continue
 
 
 def parse_assistant_content(content):
@@ -400,15 +418,16 @@ if prompt:
     with st.chat_message("user"):
         st.markdown(prompt)
     with st.chat_message("assistant"):
-        with st.spinner("Thinking..."):
-            brand = detect_brand(prompt)
+        brand = detect_brand(prompt)
+
+        request_prompt = prompt
+        static_prefix = ""
 
         if brand:
             result = calculate_ecoscore(brand)
-
             if result:
                 verdict, emoji = get_ecoscore_verdict(result['ecoscore'])
-                enriched_prompt = f"""
+                request_prompt = f"""
 User asked about sustainability of {result['brand']}.
 
 Here is the factual sustainability data based on {result['data_points']} data points from {result['years_covered']} (DO NOT CHANGE THESE NUMBERS - use them exactly):
@@ -435,15 +454,23 @@ Transparency & Compliance:
 
 Explain this EcoScore clearly using the verdict "{verdict}". Analyze key strengths and weaknesses based on the data above. Highlight any concerning metrics (like child labor or low wages). Provide 2-3 practical tips for consumers who want to buy from this brand more responsibly or find better alternatives.
 """
-                reply = fetch_completion(enriched_prompt, st.session_state.chat_history)
             else:
-                reply = f"Sorry, I couldn't find sustainability data for '{brand}' in our database. I can still help answer general questions about sustainable fashion!"
-        else:
-            reply = fetch_completion(prompt, st.session_state.chat_history)
+                static_prefix = f"Sorry, I couldn't find sustainability data for '{brand}' in our database. I can still help answer general questions about sustainable fashion!"
 
-        if reply:
-            reply = process_llm_response(reply)
-            render_assistant_message(reply)
-            st.session_state.chat_history.append({"role": "assistant", "content": reply})
+        if static_prefix:
+            st.markdown(static_prefix)
+            st.session_state.chat_history.append({"role": "assistant", "content": static_prefix})
         else:
-            st.markdown("Could not reach the model. Check your API key or try again.")
+            response = fetch_completion(request_prompt, st.session_state.chat_history)
+            if response:
+                message_placeholder = st.empty()
+                full_response = ""
+                for chunk in stream_response(response):
+                    full_response += chunk
+                    message_placeholder.markdown(full_response + "▌", unsafe_allow_html=True)
+
+                full_response = process_llm_response(full_response)
+                message_placeholder.markdown(full_response, unsafe_allow_html=True)
+                st.session_state.chat_history.append({"role": "assistant", "content": full_response})
+            else:
+                st.markdown("Could not reach the model. Check your API key or try again.")
