@@ -1,21 +1,46 @@
 import json
 import os
+import re
 import requests
 import streamlit as st
 import pandas as pd
-import numpy as np
+
+try:
+    from regression.ml_predictor import predict_ecoscore, load_model
+    ML_MODEL_AVAILABLE = True
+    try:
+        load_model()
+    except Exception:
+        ML_MODEL_AVAILABLE = False
+except ImportError:
+    ML_MODEL_AVAILABLE = False
 
 st.set_page_config(page_title="ReFashion Eco Chat", layout="wide")
 
 API_URL = "https://api.deepinfra.com/v1/openai/chat/completions"
 MODEL_NAME = "openai/gpt-oss-120b"
-SYSTEM_PROMPT = """
+
+ML_TOOL_DESCRIPTION = """
+You have access to an ML-based EcoScore prediction tool. When a user provides sustainability metrics (like carbon emissions, water usage, worker wages, etc.) but NOT a specific brand name, you can request an ML prediction.
+
+To request ML prediction, include this EXACT format in your response:
+[ML_PREDICT: carbon=VALUE, water=VALUE, waste=VALUE, wage=VALUE, hours=VALUE, child_labor=VALUE, cycles=VALUE, production=VALUE, price=VALUE, env_cost=VALUE, transparency=VALUE, return_rate=VALUE]
+
+Only include parameters you have values for. Example:
+[ML_PREDICT: carbon=8000, water=150, wage=120, cycles=24]
+
+The system will automatically calculate an EcoScore and you'll receive the result to share with the user.
+""" if ML_MODEL_AVAILABLE else ""
+
+SYSTEM_PROMPT = f"""
 You are ReFashion, a friendly and knowledgeable assistant specializing in sustainable fashion. You help users by:
 1. Having natural conversations about fashion, sustainability, clothing care, trends, and eco-conscious lifestyle
 2. Evaluating how eco-friendly specific garments are with detailed scoring
 3. Recommending sustainable fabrics based on user preferences
 
 Always respond in natural, conversational language. Never use JSON format - write in a friendly, readable way.
+
+{ML_TOOL_DESCRIPTION}
 
 When evaluating garments for eco-friendliness:
 - Provide a clear score out of 100 (higher is better, 50 is average)
@@ -246,6 +271,75 @@ def parse_assistant_content(content):
     return None
 
 
+def parse_ml_predict_call(text):
+    """Extract ML prediction parameters from LLM response."""
+    pattern = r'\[ML_PREDICT:\s*([^\]]+)\]'
+    match = re.search(pattern, text)
+    if not match:
+        return None, text
+
+    param_str = match.group(1)
+    params = {}
+
+    param_mapping = {
+        'carbon': 'carbon_emissions',
+        'water': 'water_usage',
+        'waste': 'landfill_waste',
+        'wage': 'worker_wage',
+        'hours': 'working_hours',
+        'child_labor': 'child_labor_incidents',
+        'cycles': 'release_cycles',
+        'production': 'monthly_production',
+        'price': 'avg_item_price',
+        'env_cost': 'env_cost_index',
+        'transparency': 'transparency_index',
+        'return_rate': 'return_rate',
+    }
+
+    for item in param_str.split(','):
+        item = item.strip()
+        if '=' in item:
+            key, value = item.split('=', 1)
+            key = key.strip().lower()
+            try:
+                value = float(value.strip())
+                if key in param_mapping:
+                    params[param_mapping[key]] = value
+            except ValueError:
+                continue
+
+    cleaned_text = re.sub(pattern, '', text).strip()
+    return params, cleaned_text
+
+
+def process_llm_response(response_text):
+    """Process LLM response, handle ML calls if present."""
+    if not ML_MODEL_AVAILABLE:
+        return response_text
+
+    params, cleaned_text = parse_ml_predict_call(response_text)
+
+    if params:
+        try:
+            ml_result = predict_ecoscore(**params)
+
+            ml_summary = f"""
+
+**🤖 ML Model Prediction**
+
+Based on the metrics provided, our machine learning model predicts:
+
+- **EcoScore: {ml_result['ecoscore']}/100** {ml_result['emoji']} ({ml_result['verdict']})
+- Confidence: {ml_result['confidence']} ({ml_result['features_provided']}/{ml_result['features_total']} features provided)
+
+"""
+            return cleaned_text + ml_summary
+        except Exception as e:
+            return cleaned_text + f"\n\n*(ML prediction unavailable: {str(e)})*"
+
+    return response_text
+
+
 def render_assistant_message(message):
     st.markdown(message, unsafe_allow_html=True)
 themed_container()
@@ -346,7 +440,9 @@ Explain this EcoScore clearly using the verdict "{verdict}". Analyze key strengt
                 reply = f"Sorry, I couldn't find sustainability data for '{brand}' in our database. I can still help answer general questions about sustainable fashion!"
         else:
             reply = fetch_completion(prompt, st.session_state.chat_history)
+
         if reply:
+            reply = process_llm_response(reply)
             render_assistant_message(reply)
             st.session_state.chat_history.append({"role": "assistant", "content": reply})
         else:
