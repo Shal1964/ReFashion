@@ -82,65 +82,123 @@ def load_brand_data():
     return pd.read_csv("true_cost_fast_fashion.csv")
 
 df_brand = load_brand_data()
+
 def detect_brand(text):
     if not text:
         return None
-
     text_lower = f" {text.lower()} "
-    for brand in df_brand["Brand"].dropna():
+    for brand in df_brand["Brand"].dropna().unique():
         if f" {brand.lower()} " in text_lower:
             return brand
     return None
 
 
-def min_max(series):
-    return (series - series.min()) / (series.max() - series.min())
+def min_max_global(series):
+    return (series - series.min()) / (series.max() - series.min() + 1e-9)
+
 
 def calculate_ecoscore(brand_name):
-    row = df_brand[df_brand["Brand"].str.lower() == brand_name.lower()]
-    if row.empty:
+    brand_rows = df_brand[df_brand["Brand"].str.lower() == brand_name.lower()]
+    if brand_rows.empty:
         return None
 
-    brand_row = row.iloc[0]
-
     df = df_brand.copy()
+    current_year = 2025
+    df["recency_weight"] = 1 / (current_year - df["Year"] + 1)
 
-    df["carbon_norm"] = 1 - min_max(df["Carbon_Emissions_tCO2e"])
-    df["water_norm"] = 1 - min_max(df["Water_Usage_Million_Litres"])
-    df["waste_norm"] = 1 - min_max(df["Landfill_Waste_Tonnes"])
-    df["worker_norm"] = min_max(df["Avg_Worker_Wage_USD"])
-    df["transparency_norm"] = min_max(df["Transparency_Index"])
+    df["carbon_norm"] = 1 - min_max_global(df["Carbon_Emissions_tCO2e"])
+    df["water_norm"] = 1 - min_max_global(df["Water_Usage_Million_Litres"])
+    df["waste_norm"] = 1 - min_max_global(df["Landfill_Waste_Tonnes"])
+    df["release_norm"] = 1 - min_max_global(df["Release_Cycles_Per_Year"])
+    df["child_labor_norm"] = 1 - min_max_global(df["Child_Labor_Incidents"])
+    df["hours_norm"] = 1 - min_max_global(df["Working_Hours_Per_Week"])
+    df["wage_norm"] = min_max_global(df["Avg_Worker_Wage_USD"])
+    df["transparency_norm"] = min_max_global(df["Transparency_Index"])
+    df["compliance_norm"] = min_max_global(df["Compliance_Score"])
+    df["ethical_norm"] = min_max_global(df["Ethical_Rating"])
+    df["sustainability_norm"] = min_max_global(df["Sustainability_Score"])
+    df["env_cost_norm"] = 1 - min_max_global(df["Env_Cost_Index"])
 
-    w = {
-        "carbon": 0.3,
-        "water": 0.2,
-        "waste": 0.15,
-        "worker": 0.2,
-        "transparency": 0.15
+    weights = {
+        "carbon": 0.12,
+        "water": 0.08,
+        "waste": 0.08,
+        "release": 0.05,
+        "child_labor": 0.10,
+        "hours": 0.05,
+        "wage": 0.10,
+        "transparency": 0.08,
+        "compliance": 0.08,
+        "ethical": 0.10,
+        "sustainability": 0.10,
+        "env_cost": 0.06,
     }
 
-    df["EcoScore"] = (
-        w["carbon"] * df["carbon_norm"] +
-        w["water"] * df["water_norm"] +
-        w["waste"] * df["waste_norm"] +
-        w["worker"] * df["worker_norm"] +
-        w["transparency"] * df["transparency_norm"]
+    df["row_score"] = (
+        weights["carbon"] * df["carbon_norm"] +
+        weights["water"] * df["water_norm"] +
+        weights["waste"] * df["waste_norm"] +
+        weights["release"] * df["release_norm"] +
+        weights["child_labor"] * df["child_labor_norm"] +
+        weights["hours"] * df["hours_norm"] +
+        weights["wage"] * df["wage_norm"] +
+        weights["transparency"] * df["transparency_norm"] +
+        weights["compliance"] * df["compliance_norm"] +
+        weights["ethical"] * df["ethical_norm"] +
+        weights["sustainability"] * df["sustainability_norm"] +
+        weights["env_cost"] * df["env_cost_norm"]
     ) * 100
 
+    brand_df = df[df["Brand"].str.lower() == brand_name.lower()].copy()
+    total_weight = brand_df["recency_weight"].sum()
+    ecoscore = (brand_df["row_score"] * brand_df["recency_weight"]).sum() / total_weight
+
+    latest_row = brand_df.loc[brand_df["Year"].idxmax()]
+
+    avg_metrics = brand_df.agg({
+        "Carbon_Emissions_tCO2e": "mean",
+        "Water_Usage_Million_Litres": "mean",
+        "Landfill_Waste_Tonnes": "mean",
+        "Avg_Worker_Wage_USD": "mean",
+        "Transparency_Index": "mean",
+        "Release_Cycles_Per_Year": "mean",
+        "Child_Labor_Incidents": "sum",
+        "Working_Hours_Per_Week": "mean",
+        "Compliance_Score": "mean",
+        "Ethical_Rating": "mean",
+        "Sustainability_Score": "mean",
+    })
+
     return {
-        "brand": brand_row["Brand"],
-        "ecoscore": round(
-            df[df["Brand"].str.lower() == brand_name.lower()]
-            .iloc[0]["EcoScore"], 2
-        ),
-        "carbon": brand_row["Carbon_Emissions_tCO2e"],
-        "water": brand_row["Water_Usage_Million_Litres"],
-        "waste": brand_row["Landfill_Waste_Tonnes"],
-        "wage": brand_row["Avg_Worker_Wage_USD"],
-        "transparency": brand_row["Transparency_Index"],
+        "brand": latest_row["Brand"],
+        "ecoscore": round(ecoscore, 1),
+        "data_points": len(brand_df),
+        "years_covered": f"{int(brand_df['Year'].min())}-{int(brand_df['Year'].max())}",
+        "carbon": round(avg_metrics["Carbon_Emissions_tCO2e"], 1),
+        "water": round(avg_metrics["Water_Usage_Million_Litres"], 1),
+        "waste": round(avg_metrics["Landfill_Waste_Tonnes"], 1),
+        "wage": round(avg_metrics["Avg_Worker_Wage_USD"], 2),
+        "transparency": round(avg_metrics["Transparency_Index"], 1),
+        "release_cycles": round(avg_metrics["Release_Cycles_Per_Year"], 1),
+        "child_labor_total": int(avg_metrics["Child_Labor_Incidents"]),
+        "working_hours": round(avg_metrics["Working_Hours_Per_Week"], 1),
+        "compliance": round(avg_metrics["Compliance_Score"], 1),
+        "ethical_rating": round(avg_metrics["Ethical_Rating"], 2),
+        "sustainability_raw": round(avg_metrics["Sustainability_Score"], 1),
     }
 
 
+def get_ecoscore_verdict(score):
+    if score >= 85:
+        return "Excellent", "🌟"
+    elif score >= 70:
+        return "Good", "✅"
+    elif score >= 65:
+        return "Moderate", "⚠️"
+    elif score >= 30:
+        return "Poor", "🔶"
+    else:
+        return "Very Poor", "❌"
 
 def fetch_completion(user_message, chat_history):
     api_key = st.secrets.get("DEEPINFRA_API_KEY") or os.getenv("DEEPINFRA_API_KEY")
@@ -189,7 +247,7 @@ def parse_assistant_content(content):
 
 
 def render_assistant_message(message):
-    st.markdown(message)
+    st.markdown(message, unsafe_allow_html=True)
 themed_container()
 
 col1, col2, col3 = st.columns([1, 2, 1])
@@ -255,24 +313,37 @@ if prompt:
             result = calculate_ecoscore(brand)
 
             if result:
+                verdict, emoji = get_ecoscore_verdict(result['ecoscore'])
                 enriched_prompt = f"""
 User asked about sustainability of {result['brand']}.
 
-Here is the factual sustainability data (DO NOT CHANGE NUMBERS):
-- EcoScore: {result['ecoscore']} / 100
+Here is the factual sustainability data based on {result['data_points']} data points from {result['years_covered']} (DO NOT CHANGE THESE NUMBERS - use them exactly):
+
+**EcoScore: {result['ecoscore']}/100** ({verdict} {emoji})
+
+Environmental Impact (averages):
 - Carbon emissions: {result['carbon']} tCO2e
 - Water usage: {result['water']} million liters
-- Waste: {result['waste']} tonnes
+- Landfill waste: {result['waste']} tonnes
+- Environmental cost index contribution: included in score
+- Release cycles per year: {result['release_cycles']} (higher = more fast fashion)
+
+Social & Labor Practices:
 - Average worker wage: ${result['wage']}
-- Transparency index: {result['transparency']}
+- Working hours per week: {result['working_hours']}
+- Child labor incidents (total reported): {result['child_labor_total']}
+- Ethical rating: {result['ethical_rating']}/5
 
-Explain this EcoScore clearly, give a verdict headline, analyze strengths & weaknesses,
-and provide practical tips.
+Transparency & Compliance:
+- Transparency index: {result['transparency']}/100
+- Compliance score: {result['compliance']}/100
+- Raw sustainability score from audits: {result['sustainability_raw']}/100
 
+Explain this EcoScore clearly using the verdict "{verdict}". Analyze key strengths and weaknesses based on the data above. Highlight any concerning metrics (like child labor or low wages). Provide 2-3 practical tips for consumers who want to buy from this brand more responsibly or find better alternatives.
 """
                 reply = fetch_completion(enriched_prompt, st.session_state.chat_history)
             else:
-                reply = "Sorry, I couldn't find sustainability data for that brand."
+                reply = f"Sorry, I couldn't find sustainability data for '{brand}' in our database. I can still help answer general questions about sustainable fashion!"
         else:
             reply = fetch_completion(prompt, st.session_state.chat_history)
         if reply:
