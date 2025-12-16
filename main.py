@@ -2,6 +2,8 @@ import json
 import os
 import requests
 import streamlit as st
+import pandas as pd
+import numpy as np
 
 st.set_page_config(page_title="ReFashion Eco Chat", layout="wide")
 
@@ -30,6 +32,9 @@ When recommending fabrics:
 
 Scoring guidance: favor recycled fibers, organic cotton, hemp, linen, certified lyocell, Tencel, and durability; penalize virgin polyester, acrylic, conventional cotton without certifications, heavy dyeing, and blends that hinder recycling.
 
+IMPORTANT:
+- Keep answers concise but complete
+- Always finish all bullet points and sections
 Be warm, engaging, educational, and use emojis occasionally to make responses friendly. Structure your responses with clear headings and bullet points for readability.
 """
 
@@ -70,6 +75,71 @@ def themed_container():
         """,
         unsafe_allow_html=True,
     )
+
+#eco-score
+@st.cache_data
+def load_brand_data():
+    return pd.read_csv("true_cost_fast_fashion.csv")
+
+df_brand = load_brand_data()
+def detect_brand(text):
+    if not text:
+        return None
+
+    text_lower = f" {text.lower()} "
+    for brand in df_brand["Brand"].dropna():
+        if f" {brand.lower()} " in text_lower:
+            return brand
+    return None
+
+
+def min_max(series):
+    return (series - series.min()) / (series.max() - series.min())
+
+def calculate_ecoscore(brand_name):
+    row = df_brand[df_brand["Brand"].str.lower() == brand_name.lower()]
+    if row.empty:
+        return None
+
+    brand_row = row.iloc[0]
+
+    df = df_brand.copy()
+
+    df["carbon_norm"] = 1 - min_max(df["Carbon_Emissions_tCO2e"])
+    df["water_norm"] = 1 - min_max(df["Water_Usage_Million_Litres"])
+    df["waste_norm"] = 1 - min_max(df["Landfill_Waste_Tonnes"])
+    df["worker_norm"] = min_max(df["Avg_Worker_Wage_USD"])
+    df["transparency_norm"] = min_max(df["Transparency_Index"])
+
+    w = {
+        "carbon": 0.3,
+        "water": 0.2,
+        "waste": 0.15,
+        "worker": 0.2,
+        "transparency": 0.15
+    }
+
+    df["EcoScore"] = (
+        w["carbon"] * df["carbon_norm"] +
+        w["water"] * df["water_norm"] +
+        w["waste"] * df["waste_norm"] +
+        w["worker"] * df["worker_norm"] +
+        w["transparency"] * df["transparency_norm"]
+    ) * 100
+
+    return {
+        "brand": brand_row["Brand"],
+        "ecoscore": round(
+            df[df["Brand"].str.lower() == brand_name.lower()]
+            .iloc[0]["EcoScore"], 2
+        ),
+        "carbon": brand_row["Carbon_Emissions_tCO2e"],
+        "water": brand_row["Water_Usage_Million_Litres"],
+        "waste": brand_row["Landfill_Waste_Tonnes"],
+        "wage": brand_row["Avg_Worker_Wage_USD"],
+        "transparency": brand_row["Transparency_Index"],
+    }
+
 
 
 def fetch_completion(user_message, chat_history):
@@ -179,6 +249,31 @@ if prompt:
         st.markdown(prompt)
     with st.chat_message("assistant"):
         with st.spinner("Thinking..."):
+            brand = detect_brand(prompt)
+
+        if brand:
+            result = calculate_ecoscore(brand)
+
+            if result:
+                enriched_prompt = f"""
+User asked about sustainability of {result['brand']}.
+
+Here is the factual sustainability data (DO NOT CHANGE NUMBERS):
+- EcoScore: {result['ecoscore']} / 100
+- Carbon emissions: {result['carbon']} tCO2e
+- Water usage: {result['water']} million liters
+- Waste: {result['waste']} tonnes
+- Average worker wage: ${result['wage']}
+- Transparency index: {result['transparency']}
+
+Explain this EcoScore clearly, give a verdict headline, analyze strengths & weaknesses,
+and provide practical tips.
+
+"""
+                reply = fetch_completion(enriched_prompt, st.session_state.chat_history)
+            else:
+                reply = "Sorry, I couldn't find sustainability data for that brand."
+        else:
             reply = fetch_completion(prompt, st.session_state.chat_history)
         if reply:
             render_assistant_message(reply)
