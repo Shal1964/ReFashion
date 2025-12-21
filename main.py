@@ -82,17 +82,23 @@ Always respond in natural, conversational language with clear explanations.
 {VISUALIZATION_DESCRIPTION}
 
 When evaluating garments for eco-friendliness:
-- Provide a clear score out of 100 (higher is better, 50 is average)
-- Give a verdict headline (e.g., "Moderately Sustainable Choice" or "Highly Eco-Friendly")
-- Analyze each fabric mentioned, rating impact as excellent/good/fair/poor with explanation
-- Summarize the overall sustainability
-- Offer 2-3 practical tips for the consumer
+- ONLY respond with the structured data tag, nothing else
+- Use this EXACT format:
+  [GARMENT: {{"name": "garment_name", "score": number, "verdict": "verdict_text", "fabrics": [{{"name": "fabric_name", "impact": "excellent/good/fair/poor", "explanation": "why"}}]}}]
+- Do NOT add any text before or after the tag
+- The card will display all information automatically
 
 When recommending fabrics:
-- Suggest 2-4 eco-friendly fabrics matching their needs
-- Explain why each fabric suits their requirements
-- Mention what each fabric is best for
-- Include care tips where relevant
+- ONLY respond with the structured data tag, nothing else
+- Use this EXACT format:
+  [FABRICS: [{{"name": "Organic Cotton", "best_for": "Everyday wear", "why": "explanation", "care_tip": "tip"}}]]
+- Do NOT add any text, tips, or explanations outside the tag
+- The card will display all information beautifully
+
+For general questions about fashion, sustainability, care, or trends:
+- Respond naturally with conversational text
+- Use emojis occasionally to be friendly
+- Structure with clear headings and bullet points
 
 Scoring guidance: favor recycled fibers, organic cotton, hemp, linen, certified lyocell, Tencel, and durability; penalize virgin polyester, acrylic, conventional cotton without certifications, heavy dyeing, and blends that hinder recycling.
 
@@ -258,7 +264,7 @@ def fetch_completion(user_message, chat_history):
         "model": MODEL_NAME,
         "messages": messages,
         "temperature": 0.35,
-        "stream": True,
+        "stream": False,
     }
     try:
         response = requests.post(
@@ -266,12 +272,11 @@ def fetch_completion(user_message, chat_history):
             headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
             json=payload,
             timeout=60,
-            stream=True,
         )
         if response.status_code != 200:
             st.error(f"DeepInfra error {response.status_code}: {response.text[:200]}")
             return None
-        return response
+        return response.json()
     except requests.RequestException as exc:
         st.error(f"Request failed: {exc}")
         return None
@@ -349,38 +354,342 @@ def parse_ml_predict_call(text):
     return params, cleaned_text
 
 
+def extract_json_from_tag(text, tag_name):
+    pattern = f'\\[{tag_name}:\\s*'
+    match = re.search(pattern, text)
+    if not match:
+        return None, text
+
+    start_pos = match.end()
+    bracket_count = 0
+    json_start = None
+    json_end = None
+    in_string = False
+    escape_next = False
+
+    for i in range(start_pos, len(text)):
+        char = text[i]
+
+        if escape_next:
+            escape_next = False
+            continue
+
+        if char == '\\':
+            escape_next = True
+            continue
+
+        if char == '"':
+            in_string = not in_string
+            continue
+
+        if not in_string:
+            if char == '[' or char == '{':
+                if bracket_count == 0:
+                    json_start = i
+                bracket_count += 1
+            elif char == ']':
+                bracket_count -= 1
+                if bracket_count == 0 and json_start is not None:
+                    json_end = i + 1
+                    break
+            elif char == '}':
+                bracket_count -= 1
+                if bracket_count == 0 and json_start is not None:
+                    json_end = i + 1
+                    break
+
+    if json_end is None or json_start is None:
+        return None, text
+
+    json_str = text[json_start:json_end]
+
+    closing_bracket_pos = text.find(']', json_end)
+    if closing_bracket_pos == -1 or closing_bracket_pos > json_end + 10:
+        closing_bracket_pos = json_end
+    else:
+        closing_bracket_pos += 1
+
+    tag_start = match.start()
+    cleaned_text = text[:tag_start] + text[closing_bracket_pos:]
+
+    try:
+        parsed_data = json.loads(json_str)
+        return parsed_data, cleaned_text.strip()
+    except json.JSONDecodeError as e:
+        return None, text
+
+
 def process_llm_response(response_text):
-    if not ML_MODEL_AVAILABLE:
-        return response_text
+    ml_result = None
+    garment_data = None
+    fabric_recommendations = None
+    cleaned_text = response_text
 
-    params, cleaned_text = parse_ml_predict_call(response_text)
+    if ML_MODEL_AVAILABLE:
+        params, cleaned_text = parse_ml_predict_call(cleaned_text)
+        if params:
+            try:
+                ml_result = predict_ecoscore(**params)
+            except Exception as e:
+                cleaned_text += f"\n\n*(ML prediction unavailable: {str(e)})*"
 
-    if params:
-        try:
-            ml_result = predict_ecoscore(**params)
+    garment_data, cleaned_text = extract_json_from_tag(cleaned_text, 'GARMENT')
+    fabric_recommendations, cleaned_text = extract_json_from_tag(cleaned_text, 'FABRICS')
 
-            ml_summary = f"""
-
-**🤖 ML Model Prediction**
-
-Based on the metrics provided, our machine learning model predicts:
-
-- **EcoScore: {ml_result['ecoscore']}/100** {ml_result['emoji']} ({ml_result['verdict']})
-- Confidence: {ml_result['confidence']} ({ml_result['features_provided']}/{ml_result['features_total']} features provided)
-
-"""
-            return cleaned_text + ml_summary
-        except Exception as e:
-            return cleaned_text + f"\n\n*(ML prediction unavailable: {str(e)})*"
-
-    return response_text
+    return cleaned_text, ml_result, garment_data, fabric_recommendations
 
 
-def render_assistant_message(message):
+def render_ml_prediction_card(ml_result):
+    score = ml_result['ecoscore']
+    verdict = ml_result['verdict']
+    emoji = ml_result['emoji']
+    confidence = ml_result['confidence']
+    features_provided = ml_result['features_provided']
+    features_total = ml_result['features_total']
+
+    score_color = "#4CAF50" if score >= 85 else "#8BC34A" if score >= 70 else "#FFC107" if score >= 65 else "#FF9800" if score >= 30 else "#F44336"
+    confidence_color = "#4CAF50" if confidence == "High" else "#FFC107" if confidence == "Medium" else "#FF9800"
+
+    st.markdown(f"""
+    <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); border-radius: 16px; padding: 2rem; margin-bottom: 1.5rem; box-shadow: 0 4px 12px rgba(102, 126, 234, 0.3); border-left: 6px solid #667eea;">
+        <div style="display: flex; align-items: center; gap: 1rem; margin-bottom: 1rem;">
+            <div style="font-size: 2rem;">🤖</div>
+            <div>
+                <h2 style="margin: 0; color: white; font-family: 'Poppins', sans-serif; font-size: 1.5rem;">ML Model Prediction</h2>
+                <div style="color: rgba(255,255,255,0.9); font-size: 0.9rem; margin-top: 0.3rem;">Based on provided sustainability metrics</div>
+            </div>
+        </div>
+        <div style="display: flex; justify-content: space-between; align-items: center; background: rgba(255,255,255,0.15); backdrop-filter: blur(10px); border-radius: 12px; padding: 1.5rem; margin-top: 1rem;">
+            <div>
+                <div style="font-size: 1.1rem; color: rgba(255,255,255,0.9); margin-bottom: 0.5rem;">Predicted EcoScore</div>
+                <div style="font-size: 2rem; font-weight: bold; color: white;">{emoji} {verdict}</div>
+            </div>
+            <div style="text-align: right;">
+                <div style="font-size: 3.5rem; font-weight: bold; color: white; line-height: 1;">{score}</div>
+                <div style="color: rgba(255,255,255,0.9); font-size: 0.9rem;">out of 100</div>
+            </div>
+        </div>
+        <div style="background: rgba(255,255,255,0.1); border-radius: 8px; padding: 1rem; margin-top: 1rem;">
+            <div style="display: flex; justify-content: space-between; align-items: center;">
+                <div style="color: rgba(255,255,255,0.9);">Prediction Confidence</div>
+                <div style="display: inline-block; background: {confidence_color}; color: white; padding: 0.3rem 0.8rem; border-radius: 12px; font-weight: 600; font-size: 0.85rem;">{confidence}</div>
+            </div>
+            <div style="color: rgba(255,255,255,0.8); font-size: 0.85rem; margin-top: 0.5rem;">{features_provided} of {features_total} features provided</div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+
+def render_garment_evaluation_card(garment_data):
+    score = garment_data['score']
+    verdict = garment_data['verdict']
+    garment_name = garment_data.get('name', 'Garment')
+    fabrics = garment_data.get('fabrics', [])
+
+    score_color = "#4CAF50" if score >= 75 else "#8BC34A" if score >= 60 else "#FFC107" if score >= 50 else "#FF9800" if score >= 30 else "#F44336"
+
+    st.markdown(f"""
+    <div style="background: white; border-radius: 16px; padding: 2rem; margin-bottom: 1.5rem; box-shadow: 0 4px 12px rgba(0,0,0,0.08); border-left: 6px solid {score_color};">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem;">
+            <h2 style="margin: 0; color: #2d3436; font-family: 'Poppins', sans-serif;">♻️ {garment_name}</h2>
+            <div style="text-align: right;">
+                <div style="font-size: 3rem; font-weight: bold; color: {score_color}; line-height: 1;">{score}</div>
+                <div style="color: #636e72; font-size: 0.9rem;">out of 100</div>
+            </div>
+        </div>
+        <div style="background: linear-gradient(135deg, {score_color}22 0%, {score_color}11 100%); padding: 1rem; border-radius: 12px; margin-bottom: 1rem;">
+            <div style="font-size: 1.3rem; font-weight: 600; color: #2d3436;">{verdict}</div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    if fabrics:
+        st.markdown("### 🧵 Fabric Analysis")
+        cols = st.columns(min(len(fabrics), 3))
+        for idx, fabric in enumerate(fabrics):
+            with cols[idx % len(cols)]:
+                impact_color = "#4CAF50" if fabric['impact'] == 'excellent' else "#8BC34A" if fabric['impact'] == 'good' else "#FFC107" if fabric['impact'] == 'fair' else "#FF9800"
+                st.markdown(f"""
+                <div class="info-card">
+                    <h3 style="color: #2d3436; margin-top: 0;">{fabric['name']}</h3>
+                    <div style="display: inline-block; background: {impact_color}; color: white; padding: 0.3rem 0.8rem; border-radius: 12px; font-weight: 600; font-size: 0.85rem; margin-bottom: 0.8rem;">{fabric['impact'].upper()}</div>
+                    <p style="color: #636e72; font-size: 0.9rem; line-height: 1.5; margin: 0;">{fabric['explanation']}</p>
+                </div>
+                """, unsafe_allow_html=True)
+
+
+def render_fabric_recommendations_card(recommendations):
+    st.markdown("""
+    <div style="background: linear-gradient(135deg, #B7D292 0%, #9cb87a 100%); border-radius: 16px; padding: 1.5rem 2rem; margin-bottom: 1.5rem; box-shadow: 0 4px 12px rgba(183, 210, 146, 0.3);">
+        <div style="display: flex; align-items: center; gap: 1rem;">
+            <div style="font-size: 2.5rem;">🌿</div>
+            <div>
+                <h2 style="margin: 0; color: white; font-family: 'Poppins', sans-serif; font-size: 1.5rem;">Sustainable Fabric Recommendations</h2>
+                <div style="color: rgba(255,255,255,0.95); font-size: 0.9rem; margin-top: 0.3rem;">Eco-friendly materials tailored to your needs</div>
+            </div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    cols = st.columns(2)
+    for idx, fabric in enumerate(recommendations):
+        with cols[idx % 2]:
+            st.markdown(f"""
+            <div class="info-card">
+                <h3 style="color: #B7D292; margin-top: 0; font-size: 1.3rem;">{fabric['name']}</h3>
+                <div style="margin-bottom: 0.8rem;">
+                    <span style="background: #e8f1e1; color: #5a7a3d; padding: 0.25rem 0.6rem; border-radius: 8px; font-size: 0.8rem; font-weight: 600; margin-right: 0.5rem;">{'🌱 ' + fabric['best_for']}</span>
+                </div>
+                <p style="color: #636e72; font-size: 0.95rem; line-height: 1.6; margin-bottom: 1rem;">{fabric['why']}</p>
+                <div style="background: #f8faf6; border-left: 3px solid #B7D292; padding: 0.8rem; border-radius: 4px;">
+                    <div style="color: #5a7a3d; font-weight: 600; font-size: 0.85rem; margin-bottom: 0.3rem;">💡 Care Tip</div>
+                    <div style="color: #636e72; font-size: 0.85rem;">{fabric['care_tip']}</div>
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+
+
+def render_ecoscore_card(result, verdict, emoji):
+    score_color = "#4CAF50" if result['ecoscore'] >= 85 else "#8BC34A" if result['ecoscore'] >= 70 else "#FFC107" if result['ecoscore'] >= 65 else "#FF9800" if result['ecoscore'] >= 30 else "#F44336"
+
+    st.markdown(f"""
+    <div style="background: white; border-radius: 16px; padding: 2rem; margin-bottom: 1.5rem; box-shadow: 0 4px 12px rgba(0,0,0,0.08); border-left: 6px solid {score_color};">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem;">
+            <h2 style="margin: 0; color: #2d3436; font-family: 'Poppins', sans-serif;">{result['brand']}</h2>
+            <div style="text-align: right;">
+                <div style="font-size: 3rem; font-weight: bold; color: {score_color}; line-height: 1;">{result['ecoscore']}</div>
+                <div style="color: #636e72; font-size: 0.9rem;">out of 100</div>
+            </div>
+        </div>
+        <div style="background: linear-gradient(135deg, {score_color}22 0%, {score_color}11 100%); padding: 1rem; border-radius: 12px; margin-bottom: 1.5rem;">
+            <div style="font-size: 1.3rem; font-weight: 600; color: #2d3436;">
+                {emoji} {verdict}
+            </div>
+            <div style="color: #636e72; font-size: 0.9rem; margin-top: 0.3rem;">
+                Based on {result['data_points']} data points ({result['years_covered']})
+            </div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+        st.markdown(f"""
+        <div class="info-card">
+            <h3 style="color: #2d3436; margin-top: 0;">🌍 Environmental Impact</h3>
+            <div style="margin: 0.8rem 0;">
+                <div style="color: #636e72; font-size: 0.85rem;">Carbon Emissions</div>
+                <div style="font-size: 1.3rem; font-weight: 600; color: #2d3436;">{result['carbon']} <span style="font-size: 0.8rem; font-weight: normal;">tCO2e</span></div>
+            </div>
+            <div style="margin: 0.8rem 0;">
+                <div style="color: #636e72; font-size: 0.85rem;">Water Usage</div>
+                <div style="font-size: 1.3rem; font-weight: 600; color: #2d3436;">{result['water']} <span style="font-size: 0.8rem; font-weight: normal;">M liters</span></div>
+            </div>
+            <div style="margin: 0.8rem 0;">
+                <div style="color: #636e72; font-size: 0.85rem;">Landfill Waste</div>
+                <div style="font-size: 1.3rem; font-weight: 600; color: #2d3436;">{result['waste']} <span style="font-size: 0.8rem; font-weight: normal;">tonnes</span></div>
+            </div>
+            <div style="margin: 0.8rem 0;">
+                <div style="color: #636e72; font-size: 0.85rem;">Release Cycles/Year</div>
+                <div style="font-size: 1.3rem; font-weight: 600; color: #2d3436;">{result['release_cycles']}</div>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    with col2:
+        st.markdown(f"""
+        <div class="info-card">
+            <h3 style="color: #2d3436; margin-top: 0;">👥 Labor Practices</h3>
+            <div style="margin: 0.8rem 0;">
+                <div style="color: #636e72; font-size: 0.85rem;">Average Worker Wage</div>
+                <div style="font-size: 1.3rem; font-weight: 600; color: #2d3436;">${result['wage']}</div>
+            </div>
+            <div style="margin: 0.8rem 0;">
+                <div style="color: #636e72; font-size: 0.85rem;">Working Hours/Week</div>
+                <div style="font-size: 1.3rem; font-weight: 600; color: #2d3436;">{result['working_hours']}</div>
+            </div>
+            <div style="margin: 0.8rem 0;">
+                <div style="color: #636e72; font-size: 0.85rem;">Child Labor Incidents</div>
+                <div style="font-size: 1.3rem; font-weight: 600; color: {'#F44336' if result['child_labor_total'] > 0 else '#4CAF50'};">{result['child_labor_total']}</div>
+            </div>
+            <div style="margin: 0.8rem 0;">
+                <div style="color: #636e72; font-size: 0.85rem;">Ethical Rating</div>
+                <div style="font-size: 1.3rem; font-weight: 600; color: #2d3436;">{result['ethical_rating']}<span style="font-size: 0.8rem; font-weight: normal;">/5</span></div>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    with col3:
+        st.markdown(f"""
+        <div class="info-card">
+            <h3 style="color: #2d3436; margin-top: 0;">📊 Transparency</h3>
+            <div style="margin: 0.8rem 0;">
+                <div style="color: #636e72; font-size: 0.85rem;">Transparency Index</div>
+                <div style="font-size: 1.3rem; font-weight: 600; color: #2d3436;">{result['transparency']}<span style="font-size: 0.8rem; font-weight: normal;">/100</span></div>
+                <div style="background: #e8f1e1; border-radius: 4px; height: 8px; margin-top: 0.5rem; overflow: hidden;">
+                    <div style="background: #B7D292; height: 100%; width: {result['transparency']}%;"></div>
+                </div>
+            </div>
+            <div style="margin: 0.8rem 0;">
+                <div style="color: #636e72; font-size: 0.85rem;">Compliance Score</div>
+                <div style="font-size: 1.3rem; font-weight: 600; color: #2d3436;">{result['compliance']}<span style="font-size: 0.8rem; font-weight: normal;">/100</span></div>
+                <div style="background: #e8f1e1; border-radius: 4px; height: 8px; margin-top: 0.5rem; overflow: hidden;">
+                    <div style="background: #B7D292; height: 100%; width: {result['compliance']}%;"></div>
+                </div>
+            </div>
+            <div style="margin: 0.8rem 0;">
+                <div style="color: #636e72; font-size: 0.85rem;">Sustainability Score</div>
+                <div style="font-size: 1.3rem; font-weight: 600; color: #2d3436;">{result['sustainability_raw']}<span style="font-size: 0.8rem; font-weight: normal;">/100</span></div>
+                <div style="background: #e8f1e1; border-radius: 4px; height: 8px; margin-top: 0.5rem; overflow: hidden;">
+                    <div style="background: #B7D292; height: 100%; width: {result['sustainability_raw']}%;"></div>
+                </div>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+
+def render_assistant_message(message_obj):
+    message = message_obj if isinstance(message_obj, str) else message_obj.get("content", "")
+    brand_result = message_obj.get("brand_result") if isinstance(message_obj, dict) else None
+    verdict = message_obj.get("verdict") if isinstance(message_obj, dict) else None
+    emoji = message_obj.get("emoji") if isinstance(message_obj, dict) else None
+    ml_result = message_obj.get("ml_result") if isinstance(message_obj, dict) else None
+    garment_data = message_obj.get("garment_data") if isinstance(message_obj, dict) else None
+    fabric_recommendations = message_obj.get("fabric_recommendations") if isinstance(message_obj, dict) else None
+
+    if brand_result:
+        render_ecoscore_card(brand_result, verdict, emoji)
+
+        carbon_score = max(0, min(100, 100 - (brand_result['carbon'] / 200) * 100))
+        water_score = max(0, min(100, 100 - (brand_result['water'] / 300) * 100))
+        labor_score = (brand_result['ethical_rating'] / 5) * 100
+        waste_score = max(0, min(100, 100 - (brand_result['waste'] / 100) * 100))
+        transparency_score = brand_result['transparency']
+
+        if VISUALIZATION_AVAILABLE:
+            radar_data = {
+                "type": "radar",
+                "data": {
+                    "title": f"{brand_result['brand']} Sustainability Breakdown",
+                    "categories": ["Carbon Impact", "Water Usage", "Labor Practices", "Waste Mgmt", "Transparency"],
+                    "scores": [carbon_score, water_score, labor_score, waste_score, transparency_score]
+                }
+            }
+            render_visualization(radar_data)
+
+    if ml_result:
+        render_ml_prediction_card(ml_result)
+
+    if garment_data:
+        render_garment_evaluation_card(garment_data)
+
+    if fabric_recommendations:
+        render_fabric_recommendations_card(fabric_recommendations)
+
     if VISUALIZATION_AVAILABLE:
         viz_data, text_content = parse_visualization_data(message)
-
-        if text_content:
+        if text_content and text_content.strip():
             st.markdown(text_content, unsafe_allow_html=True)
 
         if viz_data:
@@ -390,7 +699,7 @@ def render_assistant_message(message):
                     st.plotly_chart(fig, use_container_width=True, key=f"final_chart_{hash(message)}")
             except Exception as e:
                 st.warning(f"Could not render visualization: {str(e)}")
-    else:
+    elif message and message.strip():
         st.markdown(message, unsafe_allow_html=True)
 
 
@@ -478,12 +787,11 @@ chat_box = st.container()
 with chat_box:
     for message in st.session_state.chat_history:
         role = message.get("role")
-        content = message.get("content", "")
         with st.chat_message(role):
             if role == "assistant":
-                render_assistant_message(content)
+                render_assistant_message(message)
             else:
-                st.markdown(content)
+                st.markdown(message.get("content", ""))
 
 prompt = st.chat_input("Ask me anything about sustainable fashion...")
 if prompt:
@@ -500,37 +808,22 @@ if prompt:
             result = calculate_ecoscore(brand)
             if result:
                 verdict, emoji = get_ecoscore_verdict(result['ecoscore'])
+
                 request_prompt = f"""
 User asked about sustainability of {result['brand']}.
 
-Here is the factual sustainability data based on {result['data_points']} data points from {result['years_covered']} (DO NOT CHANGE THESE NUMBERS - use them exactly):
+I've already displayed a structured card with all the metrics and a radar chart visualization. Now provide:
 
-**EcoScore: {result['ecoscore']}/100** ({verdict} {emoji})
+1. A brief analysis (2-3 sentences) highlighting key strengths OR weaknesses based on the data
+2. 2-3 practical tips for consumers regarding this brand (e.g., better alternatives, how to buy responsibly from them, or what to avoid)
 
-Environmental Impact (averages):
-- Carbon emissions: {result['carbon']} tCO2e
-- Water usage: {result['water']} million liters
-- Landfill waste: {result['waste']} tonnes
-- Environmental cost index contribution: included in score
-- Release cycles per year: {result['release_cycles']} (higher = more fast fashion)
+Keep it concise since the detailed metrics are already visible.
 
-Social & Labor Practices:
-- Average worker wage: ${result['wage']}
-- Working hours per week: {result['working_hours']}
-- Child labor incidents (total reported): {result['child_labor_total']}
-- Ethical rating: {result['ethical_rating']}/5
-
-Transparency & Compliance:
-- Transparency index: {result['transparency']}/100
-- Compliance score: {result['compliance']}/100
-- Raw sustainability score from audits: {result['sustainability_raw']}/100
-
-Explain this EcoScore clearly using the verdict "{verdict}". Analyze key strengths and weaknesses based on the data above. Highlight any concerning metrics (like child labor or low wages). Provide 2-3 practical tips for consumers who want to buy from this brand more responsibly or find better alternatives.
-
-IMPORTANT: Create a radar chart visualization showing the breakdown across key categories. Use this format:
-[VISUALIZE: {{"type": "radar", "data": {{"title": "{result['brand']} Sustainability Breakdown", "categories": ["Carbon Impact", "Water Usage", "Labor Practices", "Waste Mgmt", "Transparency"], "scores": [carbon_score, water_score, labor_score, waste_score, transparency_score]}}}}]
-
-Calculate category scores (0-100) based on the metrics above, where higher is better.
+Data context:
+- EcoScore: {result['ecoscore']}/100 ({verdict})
+- Carbon: {result['carbon']} tCO2e, Water: {result['water']}M liters, Waste: {result['waste']} tonnes
+- Worker wage: ${result['wage']}, Hours: {result['working_hours']}, Child labor: {result['child_labor_total']}
+- Transparency: {result['transparency']}/100, Compliance: {result['compliance']}/100
 """
             else:
                 static_prefix = f"Sorry, I couldn't find sustainability data for '{brand}' in our database. I can still help answer general questions about sustainable fashion!"
@@ -539,37 +832,45 @@ Calculate category scores (0-100) based on the metrics above, where higher is be
             st.markdown(static_prefix)
             st.session_state.chat_history.append({"role": "assistant", "content": static_prefix})
         else:
+            loading_placeholder = st.empty()
+            with loading_placeholder.container():
+                st.markdown("""
+                <div style="background: linear-gradient(135deg, #B7D292 0%, #9cb87a 100%); border-radius: 12px; padding: 1.5rem; margin: 1rem 0; text-align: center;">
+                    <div style="display: flex; align-items: center; justify-content: center; gap: 1rem;">
+                        <div class="spinner" style="border: 3px solid rgba(255,255,255,0.3); border-top: 3px solid white; border-radius: 50%; width: 24px; height: 24px; animation: spin 1s linear infinite;"></div>
+                        <div style="color: white; font-size: 1.1rem; font-weight: 500;">🤔 Analyzing your request...</div>
+                    </div>
+                </div>
+                <style>
+                @keyframes spin {
+                    0% { transform: rotate(0deg); }
+                    100% { transform: rotate(360deg); }
+                }
+                </style>
+                """, unsafe_allow_html=True)
+
             response = fetch_completion(request_prompt, st.session_state.chat_history)
+            loading_placeholder.empty()
+
             if response:
-                text_placeholder = st.empty()
-                chart_placeholder = st.empty()
-                full_response = ""
-                chart_rendered = False
+                try:
+                    full_response = response.get("choices", [{}])[0].get("message", {}).get("content", "")
 
-                for chunk in stream_response(response):
-                    full_response += chunk
+                    full_response, ml_result, garment_data, fabric_recommendations = process_llm_response(full_response)
 
-                    viz_data, clean_text = parse_visualization_data(full_response)
+                    message_data = {"role": "assistant", "content": full_response}
+                    if brand:
+                        message_data.update({"brand_result": result, "verdict": verdict, "emoji": emoji})
+                    if ml_result:
+                        message_data["ml_result"] = ml_result
+                    if garment_data:
+                        message_data["garment_data"] = garment_data
+                    if fabric_recommendations:
+                        message_data["fabric_recommendations"] = fabric_recommendations
 
-                    if clean_text.strip():
-                        text_placeholder.markdown(clean_text + "▌", unsafe_allow_html=True)
-
-                    if viz_data and not chart_rendered:
-                        try:
-                            fig = render_visualization(viz_data)
-                            if fig:
-                                chart_placeholder.plotly_chart(fig, use_container_width=True, key=f"streaming_chart_{hash(full_response)}")
-                                chart_rendered = True
-                        except Exception:
-                            pass
-
-                full_response = process_llm_response(full_response)
-
-                text_placeholder.empty()
-                chart_placeholder.empty()
-                text_placeholder.empty()
-                chart_placeholder.empty()
-                render_assistant_message(full_response)
-                st.session_state.chat_history.append({"role": "assistant", "content": full_response})
+                    render_assistant_message(message_data)
+                    st.session_state.chat_history.append(message_data)
+                except Exception as e:
+                    st.error(f"Error processing response: {str(e)}")
             else:
                 st.markdown("Could not reach the model. Check your API key or try again.")
