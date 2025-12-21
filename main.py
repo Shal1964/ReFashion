@@ -7,6 +7,7 @@ import pandas as pd
 
 try:
     from regression.ml_predictor import predict_ecoscore, load_model
+    from regression.visualize_model import generate_training_visualization
     ML_MODEL_AVAILABLE = True
     try:
         load_model()
@@ -15,10 +16,16 @@ try:
 except ImportError:
     ML_MODEL_AVAILABLE = False
 
+try:
+    from utils.chart_renderer import parse_visualization_data, render_visualization
+    VISUALIZATION_AVAILABLE = True
+except ImportError:
+    VISUALIZATION_AVAILABLE = False
+
 st.set_page_config(page_title="ReFashion Eco Chat", layout="wide")
 
 API_URL = "https://api.deepinfra.com/v1/openai/chat/completions"
-MODEL_NAME = "openai/gpt-oss-120b"
+MODEL_NAME = "deepseek-ai/DeepSeek-V3.2"
 
 ML_TOOL_DESCRIPTION = """
 You have access to an ML-based EcoScore prediction tool. When a user provides sustainability metrics (like carbon emissions, water usage, worker wages, etc.) but NOT a specific brand name, you can request an ML prediction.
@@ -32,15 +39,47 @@ Only include parameters you have values for. Example:
 The system will automatically calculate an EcoScore and you'll receive the result to share with the user.
 """ if ML_MODEL_AVAILABLE else ""
 
+VISUALIZATION_DESCRIPTION = """
+You can create interactive visualizations for your responses! When appropriate, include visualization data using this format:
+[VISUALIZE: {{"type": "chart_type", "data": {{...}}}}]
+
+Available chart types:
+
+1. **gauge** - Single score display (0-100)
+   {{"type": "gauge", "data": {{"score": 75, "title": "EcoScore"}}}}
+
+2. **radar** - Multi-category breakdown
+   {{"type": "radar", "data": {{"title": "Sustainability Breakdown", "categories": ["Carbon", "Water", "Labor", "Waste"], "scores": [80, 65, 90, 70]}}}}
+
+3. **bar** - Comparison chart
+   {{"type": "bar", "data": {{"title": "Brand Comparison", "labels": ["Brand A", "Brand B"], "values": [75, 60], "x_label": "EcoScore"}}}}
+
+4. **pie** - Distribution/composition
+   {{"type": "pie", "data": {{"title": "Fabric Composition", "labels": ["Cotton", "Polyester"], "values": [70, 30]}}}}
+
+5. **line** - Trends over time
+   {{"type": "line", "data": {{"title": "Sustainability Trend", "x": ["2020", "2021", "2022"], "y": [60, 68, 75], "x_label": "Year", "y_label": "Score"}}}}
+
+Use visualizations when:
+- Showing EcoScores or ratings
+- Comparing multiple items
+- Breaking down components
+- Displaying trends
+
+Always add text explanation BEFORE the visualization tag.
+""" if VISUALIZATION_AVAILABLE else ""
+
 SYSTEM_PROMPT = f"""
 You are ReFashion, a friendly and knowledgeable assistant specializing in sustainable fashion. You help users by:
 1. Having natural conversations about fashion, sustainability, clothing care, trends, and eco-conscious lifestyle
 2. Evaluating how eco-friendly specific garments are with detailed scoring
 3. Recommending sustainable fabrics based on user preferences
 
-Always respond in natural, conversational language. Never use JSON format - write in a friendly, readable way.
+Always respond in natural, conversational language with clear explanations.
 
 {ML_TOOL_DESCRIPTION}
+
+{VISUALIZATION_DESCRIPTION}
 
 When evaluating garments for eco-friendliness:
 - Provide a clear score out of 100 (higher is better, 50 is average)
@@ -101,7 +140,6 @@ def themed_container():
         unsafe_allow_html=True,
     )
 
-#eco-score
 @st.cache_data
 def load_brand_data():
     return pd.read_csv("true_cost_fast_fashion.csv")
@@ -257,7 +295,6 @@ def fetch_completion(user_message, chat_history):
 
 
 def stream_response(response):
-    """Generator that yields text chunks from streaming response."""
     for line in response.iter_lines():
         if line:
             line = line.decode("utf-8")
@@ -290,7 +327,6 @@ def parse_assistant_content(content):
 
 
 def parse_ml_predict_call(text):
-    """Extract ML prediction parameters from LLM response."""
     pattern = r'\[ML_PREDICT:\s*([^\]]+)\]'
     match = re.search(pattern, text)
     if not match:
@@ -331,7 +367,6 @@ def parse_ml_predict_call(text):
 
 
 def process_llm_response(response_text):
-    """Process LLM response, handle ML calls if present."""
     if not ML_MODEL_AVAILABLE:
         return response_text
 
@@ -359,7 +394,21 @@ Based on the metrics provided, our machine learning model predicts:
 
 
 def render_assistant_message(message):
-    st.markdown(message, unsafe_allow_html=True)
+    if VISUALIZATION_AVAILABLE:
+        viz_data, text_content = parse_visualization_data(message)
+
+        if text_content:
+            st.markdown(text_content, unsafe_allow_html=True)
+
+        if viz_data:
+            try:
+                fig = render_visualization(viz_data)
+                if fig:
+                    st.plotly_chart(fig, use_container_width=True, key=f"final_chart_{hash(message)}")
+            except Exception as e:
+                st.warning(f"Could not render visualization: {str(e)}")
+    else:
+        st.markdown(message, unsafe_allow_html=True)
 themed_container()
 
 col1, col2, col3 = st.columns([1, 2, 1])
@@ -375,6 +424,40 @@ with col2:
     )
 
 st.markdown('<div style="border-bottom: 2px solid #e8f1e1; margin: 1rem 0 2rem 0;"></div>', unsafe_allow_html=True)
+
+if ML_MODEL_AVAILABLE:
+    with st.sidebar:
+        st.markdown("### 📊 ML Model Insights")
+        if st.button("View Training Results", use_container_width=True):
+            st.session_state.show_training_viz = not st.session_state.get('show_training_viz', False)
+
+if st.session_state.get('show_training_viz', False):
+    st.markdown(
+        """
+        <div class="info-card">
+            <h3>🤖 Machine Learning Model Performance</h3>
+            <p>Our EcoScore prediction model uses Gradient Boosting to predict sustainability scores based on environmental and social metrics.</p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    with st.spinner("Loading model visualization..."):
+        try:
+            fig, metrics = generate_training_visualization()
+            st.pyplot(fig)
+
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("Test R² Score", f"{metrics['test_r2']:.3f}", help="Higher is better (max 1.0)")
+            with col2:
+                st.metric("Test MAE", f"{metrics['test_mae']:.2f}", help="Mean Absolute Error - lower is better")
+            with col3:
+                st.metric("Dataset Size", f"{metrics['n_samples']}", help="Total samples used for training")
+        except Exception as e:
+            st.error(f"Could not load visualization: {str(e)}")
+
+    st.markdown('<div style="border-bottom: 2px solid #e8f1e1; margin: 2rem 0;"></div>', unsafe_allow_html=True)
 
 st.markdown(
     """
@@ -453,6 +536,11 @@ Transparency & Compliance:
 - Raw sustainability score from audits: {result['sustainability_raw']}/100
 
 Explain this EcoScore clearly using the verdict "{verdict}". Analyze key strengths and weaknesses based on the data above. Highlight any concerning metrics (like child labor or low wages). Provide 2-3 practical tips for consumers who want to buy from this brand more responsibly or find better alternatives.
+
+IMPORTANT: Create a radar chart visualization showing the breakdown across key categories. Use this format:
+[VISUALIZE: {{"type": "radar", "data": {{"title": "{result['brand']} Sustainability Breakdown", "categories": ["Carbon Impact", "Water Usage", "Labor Practices", "Waste Mgmt", "Transparency"], "scores": [carbon_score, water_score, labor_score, waste_score, transparency_score]}}}}]
+
+Calculate category scores (0-100) based on the metrics above, where higher is better.
 """
             else:
                 static_prefix = f"Sorry, I couldn't find sustainability data for '{brand}' in our database. I can still help answer general questions about sustainable fashion!"
@@ -463,14 +551,35 @@ Explain this EcoScore clearly using the verdict "{verdict}". Analyze key strengt
         else:
             response = fetch_completion(request_prompt, st.session_state.chat_history)
             if response:
-                message_placeholder = st.empty()
+                text_placeholder = st.empty()
+                chart_placeholder = st.empty()
                 full_response = ""
+                chart_rendered = False
+
                 for chunk in stream_response(response):
                     full_response += chunk
-                    message_placeholder.markdown(full_response + "▌", unsafe_allow_html=True)
+
+                    viz_data, clean_text = parse_visualization_data(full_response)
+
+                    if clean_text.strip():
+                        text_placeholder.markdown(clean_text + "▌", unsafe_allow_html=True)
+
+                    if viz_data and not chart_rendered:
+                        try:
+                            fig = render_visualization(viz_data)
+                            if fig:
+                                chart_placeholder.plotly_chart(fig, use_container_width=True, key=f"streaming_chart_{hash(full_response)}")
+                                chart_rendered = True
+                        except Exception:
+                            pass
 
                 full_response = process_llm_response(full_response)
-                message_placeholder.markdown(full_response, unsafe_allow_html=True)
+
+                text_placeholder.empty()
+                chart_placeholder.empty()
+                text_placeholder.empty()
+                chart_placeholder.empty()
+                render_assistant_message(full_response)
                 st.session_state.chat_history.append({"role": "assistant", "content": full_response})
             else:
                 st.markdown("Could not reach the model. Check your API key or try again.")
