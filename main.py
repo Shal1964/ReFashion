@@ -102,43 +102,26 @@ IMPORTANT:
 Be warm, engaging, educational, and use emojis occasionally to make responses friendly. Structure your responses with clear headings and bullet points for readability.
 """
 
+st.markdown(
+    """
+    <style>
+    section.main > div:first-child {
+        position: fixed;
+        top: 0;
+        left: 0;
+        right: 0;
+        background: white;
+        z-index: 999;
+        padding-top: 0.5rem;
+    }
+    section.main {
+        padding-top: 200px;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True
+)
 
-def themed_container():
-    st.markdown(
-        """
-        <link rel="preconnect" href="https://fonts.googleapis.com">
-        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-        <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;600&family=Inter:wght@400;500&display=swap" rel="stylesheet">
-        <style>
-        :root {
-            --primary: #B7D292;
-            --primary-dark: #9cb87a;
-            --background: #fafcf8;
-            --card-bg: #ffffff;
-            --text: #2d3436;
-            --text-light: #636e72;
-            --border: #e8f1e1;
-            --shadow: rgba(183, 210, 146, 0.15);
-        }
-        body { background: var(--background); }
-        .block-container { padding-top: 1rem; padding-bottom: 2rem; max-width: 1200px; }
-        h1, h2, h3 { font-family: 'Poppins', sans-serif; color: var(--text); font-weight: 600; }
-        p, li, label, span, div { font-family: 'Inter', sans-serif; color: var(--text); }
-        .header-container { display: flex; align-items: center; gap: 1rem; padding: 1rem 0 2rem 0; border-bottom: 2px solid var(--border); margin-bottom: 2rem; }
-        .logo-img { width: 120px; height: auto; }
-        .header-text { flex: 1; }
-        .header-text h1 { margin: 0; font-size: 2rem; color: var(--text); }
-        .header-text p { margin: 0.5rem 0 0 0; color: var(--text-light); font-size: 1rem; }
-        .hero-card { background: linear-gradient(135deg, var(--primary) 0%, var(--primary-dark) 100%); color: white; padding: 1.5rem 2rem; border-radius: 16px; box-shadow: 0 8px 24px var(--shadow); margin-bottom: 2rem; }
-        .hero-card h2 { color: white; margin: 0 0 0.5rem 0; font-size: 1.5rem; }
-        .hero-card p { color: rgba(255,255,255,0.95); margin: 0; line-height: 1.6; }
-        .info-card { background: var(--card-bg); border: 1px solid var(--border); border-radius: 12px; padding: 1.25rem; margin-bottom: 1.5rem; box-shadow: 0 2px 8px rgba(0,0,0,0.04); }
-        .info-card h3 { font-size: 1.1rem; margin-top: 0; color: var(--primary-dark); }
-        .score-badge { display: inline-block; background: var(--primary); color: white; padding: 0.4rem 1rem; border-radius: 20px; font-weight: 600; font-size: 0.95rem; }
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
 
 @st.cache_data
 def load_brand_data():
@@ -409,21 +392,28 @@ def render_assistant_message(message):
                 st.warning(f"Could not render visualization: {str(e)}")
     else:
         st.markdown(message, unsafe_allow_html=True)
-themed_container()
 
-col1, col2, col3 = st.columns([1, 2, 1])
+
+col1, col2, col3 = st.columns([2, 1, 2])
 with col2:
-    st.image("Logo.png", use_container_width=True)
-    st.markdown(
+    st.image("Logo.png", width = 400)
+
+st.markdown(
         """
         <div style="text-align: center;">
-            <p style="margin: 0.5rem 0 1rem 0; color: #636e72; font-size: 1rem;">Your guide to stylish and sustainable choices</p>
+            <p style="margin: 0.5rem 0 1rem 0; color: #636e72; font-size: 20.gitpx;">
+                Your guide to stylish and sustainable choices
+            </p>
         </div>
         """,
         unsafe_allow_html=True,
     )
 
-st.markdown('<div style="border-bottom: 2px solid #e8f1e1; margin: 1rem 0 2rem 0;"></div>', unsafe_allow_html=True)
+st.markdown(
+    '<div style="border-bottom: 2px solid #e8f1e1; margin: 1rem 0 2rem 0;"></div>',
+    unsafe_allow_html=True
+)
+
 
 if ML_MODEL_AVAILABLE:
     with st.sidebar:
