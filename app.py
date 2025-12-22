@@ -108,7 +108,6 @@ with st.sidebar:
         • EcoScore explanations<br>
         • Fast fashion summaries<br>
         • Structured recommendations<br>
-        • Formatted output only
         </p>
     </div>
     """, unsafe_allow_html=True)
